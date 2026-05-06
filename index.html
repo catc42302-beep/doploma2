@@ -20,11 +20,10 @@
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
-(function(){
-  const W='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-  if(typeof pdfjsLib==='undefined')return;
-  fetch(W).then(r=>r.blob()).then(b=>{pdfjsLib.GlobalWorkerOptions.workerSrc=URL.createObjectURL(b);}).catch(()=>{pdfjsLib.GlobalWorkerOptions.workerSrc=W;});
-})();
+// إعداد الـ worker بعد تحميل المكتبة مباشرة
+if(typeof pdfjsLib!=='undefined'){
+  pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
@@ -447,7 +446,7 @@ body.focus-mode #doc-area{padding:60px 80px;}
           <span class="wlc-badge" style="color:#3b82f6;border-color:#3b82f640">DOCX</span>
           <span class="wlc-badge" style="color:#06d6a0;border-color:#06d6a040">TXT</span>
         </div>
-        <div class="wlc-info">💡 يعمل بالكامل بدون إنترنت — ملفاتك تُحفظ على جهازك</div>
+
       </div>
       <div id="loading">
         <div class="spinner-ring"></div>
@@ -652,8 +651,16 @@ const LZ={
 // ══════════════════════════════════════════
 // ARABIC NORMALIZER
 // ══════════════════════════════════════════
+// حذف أدوات الربط دايماً بغض النظر عن إعداد التشكيل
+function stripPrefixes(s){
+  // نحذف الأدوات المركبة أولاً، ثم المفردة — بشرط إن بعدها حرفين على الأقل
+  return s.replace(/(^|\s)(وال|فال|بال|كال|لل|وب|وف|ول|فب|ال)(?=[\u0600-\u06FF]{2})/g,'$1')
+          .replace(/(^|\s)([وفبلك])(?=[\u0600-\u06FF]{3})/g,'$1');
+}
+
+// تطبيع التشكيل والهمزات (بيشتغل لما زر ـَ مفعّل)
 function normalizeAr(s){
-  return s
+  return stripPrefixes(s)
     .replace(/[\u064B-\u065F\u0670]/g,'')
     .replace(/[أإآٱ]/g,'ا')
     .replace(/ة/g,'ه')
@@ -691,7 +698,6 @@ async function dbSave(entry){
     const data={
       name:entry.name,size:entry.size,type:entry.type,
       textC:LZ.compress(entry.text),
-      rawBuf:entry.rawBuf||null,
       pages:entry.pages,words:entry.words,
       savedAt:Date.now(),lastOpen:Date.now()
     };
@@ -806,7 +812,7 @@ async function loadSaved(){
         name:rec.name,size:rec.size,type:rec.type,
         text,pages:rec.pages,words:rec.words,
         dbId:rec.id,savedAt:rec.savedAt,lastOpen:rec.lastOpen,
-        normText:normalizeAr(text)
+        normText:normalizeAr(text)  // يُعاد الحساب دايماً بأحدث نسخة من normalizeAr
       });
     });
     if(state.files.length){
@@ -1127,7 +1133,9 @@ function openFile(idx){
   state.active=idx;
   const f=state.files[idx];
   state.rawText=f.text||'';
-  state.normText=f.normText||normalizeAr(state.rawText);
+  // دايماً نعيد الحساب عشان تطبيع الأدوات يشتغل
+  state.normText=normalizeAr(state.rawText);
+  f.normText=state.normText;
   renderSidebar();
 
   const arabicRatio=(state.rawText.match(/[\u0600-\u06FF]/g)||[]).length/(state.rawText.length||1);
@@ -1153,8 +1161,9 @@ function openFile(idx){
   // Restore scroll position
   docArea.scrollTop=f._scrollTop||0;
   $('read-progress').style.transform='scaleX(0)';
+  const prevQ=state.searchQ;
   clearSearch();
-  if(state.searchQ)performSearch(state.searchQ);
+  if(prevQ){state.searchQ=prevQ;performSearch(prevQ);}
   if(f.dbId)dbTouch(f.dbId);
 }
 
@@ -1353,7 +1362,8 @@ function performSearch(q){
   if(!q||state.active<0){sCount.textContent='—';renderResultsPanel([]);return;}
 
   const useNorm=searchOpts.ignoreDiacritics&&!searchOpts.useRegex&&state.isArabic;
-  const searchQ=useNorm?normalizeAr(q):q;
+  // تطبيع الأدوات دايماً — تطبيع التشكيل بس لو الزر مفعّل
+  const searchQ=useNorm ? normalizeAr(q) : stripPrefixes(q);
   const regex=buildRegex(searchQ);
   if(!regex){sCount.textContent='❌ regex خطأ';sCount.style.color='var(--red)';renderResultsPanel([]);return;}
   sCount.style.color='var(--muted2)';
@@ -1366,7 +1376,8 @@ function performSearch(q){
 }
 
 function performSearchSingle(q,searchQ,regex,useNorm){
-  const sourceText=useNorm?state.normText:state.rawText;
+  // الأدوات دايماً تتطبق — التشكيل بس لو الزر مفعّل
+  const sourceText=useNorm ? state.normText : stripPrefixes(state.rawText);
   const charPositions=findAllPositions(sourceText,regex);
 
   if(!charPositions.length){
@@ -1374,12 +1385,12 @@ function performSearchSingle(q,searchQ,regex,useNorm){
     renderResultsPanel([]);return;
   }
 
-  highlightAll(docContent,buildRegex(useNorm?normalizeAr(q):q));
+  highlightAll(docContent,buildRegex(useNorm ? normalizeAr(q) : stripPrefixes(q)));
   state.matches=[...docContent.querySelectorAll('mark.m')];
 
   state.searchIndex=charPositions.map((pos,i)=>{
     const matchLen=searchQ.length;
-    const snippet=charPosToSnippet(useNorm?state.normText:state.rawText,pos,matchLen);
+    const snippet=charPosToSnippet(sourceText,pos,matchLen);
     const pageNum=getPageOfNode(state.matches[i]||null);
     return{idx:i,snippet,page:pageNum,pos};
   });
@@ -1393,7 +1404,7 @@ function performSearchAllFiles(q,searchQ,regex,useNorm){
   const allResults=[];
   state.files.forEach((file,fi)=>{
     if(!file.text)return;
-    const src=useNorm?(file.normText||normalizeAr(file.text)):file.text;
+    const src=useNorm ? (file.normText||normalizeAr(file.text)) : stripPrefixes(file.text);
     const re=buildRegex(searchQ);
     if(!re)return;
     re.lastIndex=0;
@@ -1403,10 +1414,11 @@ function performSearchAllFiles(q,searchQ,regex,useNorm){
       allResults.push({fileIdx:fi,fileName:file.name,snippet,charPos:m.index});
     }
   });
+  const srcCur=useNorm ? state.normText : stripPrefixes(state.rawText);
   highlightAll(docContent,buildRegex(searchQ));
   state.matches=[...docContent.querySelectorAll('mark.m')];
-  const charPos=findAllPositions(useNorm?state.normText:state.rawText,buildRegex(searchQ));
-  state.searchIndex=charPos.map((pos,i)=>({idx:i,snippet:charPosToSnippet(useNorm?state.normText:state.rawText,pos,searchQ.length),page:getPageOfNode(state.matches[i]||null),pos}));
+  const charPos=findAllPositions(srcCur,buildRegex(searchQ));
+  state.searchIndex=charPos.map((pos,i)=>({idx:i,snippet:charPosToSnippet(srcCur,pos,searchQ.length),page:getPageOfNode(state.matches[i]||null),pos}));
   if(state.matches.length){state.current=0;activateCurrent();}
   updateCount();
   renderResultsPanel(state.searchIndex,allResults,useNorm);
@@ -1445,6 +1457,8 @@ function highlightAll(node,regex){
     let searchText=text;
     if(searchOpts.ignoreDiacritics&&state.isArabic&&!searchOpts.useRegex)
       searchText=normalizeAr(text);
+    else if(state.isArabic&&!searchOpts.useRegex)
+      searchText=stripPrefixes(text);
     regex.lastIndex=0;
     const matches=[...searchText.matchAll(regex)];
     if(!matches.length)return;
